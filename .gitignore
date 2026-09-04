@@ -1,31 +1,13 @@
+# Built binaries
+/bin/
+/dieroller
+/pathfinder-character
+/ability-scores
 
-  
-# Allowlisting gitignore template for GO projects prevents us
-# from adding various unwanted local files, such as generated
-# files, developer configurations or IDE-specific files etc.
-#
-# Recommended: Go.AllowList.gitignore
+# Generated tables
+/csv/
+*.csv
 
-# Ignore everything
-*
-
-# But not these files...
-!/.gitignore
-
-!*.go
-!go.sum
-!go.mod
-
-!README.md
-!LICENSE
-
-# !Makefile
-
-# Don't ignore directories, so we can recurse into them
-!*/
-
-# Don't ignore the testdata folders and their contents
-!**/testdata/*
-
-# Don't ignore the media folder and it's contents
-!/media/* 
+# Editor and OS noise
+*~
+.DS_Store

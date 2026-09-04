@@ -1,0 +1,135 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  # Kept in step with the go directive in go.mod.
+  GO_VERSION: "1.24"
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt would rewrite: $unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      # The 12^6 brute force that proves the enumerated purchase table matches
+      # the Racket original's algorithm runs here; -short would skip it.
+      - name: Run tests
+        run: go test -count=1 ./...
+
+      - name: Generate the ability score table
+        run: |
+          go run ./cmd/ability-scores --out ./csv --legal-only
+          test "$(wc -l < csv/legal_scores.csv)" -eq 12377
+
+  build:
+    name: Executables
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Build executables
+        run: |
+          mkdir -p bin
+          for command in dieroller pathfinder-character ability-scores; do
+            go build -trimpath -ldflags "-s -w" -o "bin/$command" "./cmd/$command"
+          done
+
+      - name: Smoke test the executables
+        run: |
+          ./bin/dieroller --version
+          ./bin/dieroller 4d6k3 -v
+          ./bin/dieroller 6x4d6k3 -v
+          ./bin/dieroller 2d6+1d8-1 -v
+          ./bin/dieroller 2d20kl1 -v
+          ./bin/dieroller "sum(6x4d6k3)" -v
+          ./bin/dieroller avg:100x1d20
+          ./bin/pathfinder-character --version
+          ./bin/pathfinder-character -p epic -n 2 -v
+          # A validation failure must exit non-zero.
+          if ./bin/dieroller 2d6k5; then exit 1; fi
+          # The removed flags must be rejected.
+          if ./bin/dieroller --dice 3; then exit 1; fi
+          # An unknown aggregate must be rejected.
+          if ./bin/dieroller worst:6x4d6k3; then exit 1; fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-executables
+          path: bin/
+
+  # Publishes on a tag only. It attaches the artifact the job above built and
+  # smoke tested rather than rebuilding, so what ships is byte for byte what
+  # passed CI, and `contents: write` stays scoped to a job that ordinary pushes
+  # never reach.
+  publish:
+    name: Attach executables to the release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # A shallow checkout is enough; the tag object itself is fetched below.
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-executables
+          path: dist
+
+      - name: Attach the executables
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # actions/checkout resolves a tag push to its commit and writes a
+          # lightweight ref, so the annotation gh reads for the notes is not
+          # here yet. fetch-depth and fetch-tags do not change that; fetching
+          # the tag ref by name does.
+          git fetch --force origin \
+            "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          version="${GITHUB_REF_NAME#v}"
+          for program in dieroller pathfinder-character ability-scores; do
+            mv "dist/$program" "dist/$program-$version-linux-x86_64"
+          done
+          (cd dist && sha256sum ./*-linux-x86_64 | sed 's# \./# #' > SHA256SUMS)
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            # gh falls back to the last commit message when the tag object is
+            # missing, which publishes plausible-looking but wrong notes. Fail
+            # instead: a release is not worth guessing at.
+            test "$(git cat-file -t "$GITHUB_REF_NAME")" = tag || {
+              echo "::error::$GITHUB_REF_NAME is not an annotated tag here; notes would be wrong"
+              exit 1
+            }
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" --notes-from-tag --verify-tag
+          fi
+          # --clobber so re-running the workflow replaces the assets rather
+          # than failing on the ones already there.
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
