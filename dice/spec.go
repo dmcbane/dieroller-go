@@ -8,7 +8,7 @@ package dice
 import (
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"strconv"
 )
 
@@ -144,10 +144,12 @@ func (s Spec) modifierPart() string {
 func (s Spec) Select(rolled []int) []int {
 	ordered := make([]int, len(rolled))
 	copy(ordered, rolled)
-	if s.From == Low {
-		sort.Ints(ordered)
-	} else {
-		sort.Sort(sort.Reverse(sort.IntSlice(ordered)))
+	// slices.Sort is generic over int rather than dispatching through
+	// sort.Interface, which matters here: this runs once per dice group of
+	// every roll.
+	slices.Sort(ordered)
+	if s.From == High {
+		slices.Reverse(ordered)
 	}
 	return ordered[:s.Keep]
 }
